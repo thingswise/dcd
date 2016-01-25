@@ -36,16 +36,39 @@ func (s *Storage) getHashes() ([]string, error) {
 	return res, nil
 }
 
-func (s *Storage) setHashes(hashes []string) error {
-	if err := s.Session.Query("DELETE FROM dconf.files WHERE entryname=?;", s.File).Exec(); err != nil {
+func (s *Storage) setHashes(oldHashes, hashes []string) error {
+	batch := s.Session.NewBatch(gocql.LoggedBatch)
+
+	newHashes := make(map[string]bool)
+
+	for i := 0; i < len(hashes); i++ {
+		batch.Query("INSERT INTO dconf.files(entryname, block, data, hash) VALUES (?,?,?,?);", s.File, i, make([]byte, 0), hashes[i])
+		newHashes[hashes[i]] = true
+	}
+
+	for i := len(hashes); i < len(oldHashes); i++ {
+		batch.Query("DELETE FROM dconf.files WHERE entryname=? AND block=?;", s.File, i)
+	}
+
+	if err := s.Session.ExecuteBatch(batch); err != nil {
 		return err
 	}
 
-	for i, h := range hashes {
-		if err := s.Session.Query("INSERT INTO dconf.files(entryname, block, data, hash) VALUES (?,?,?,?);", s.File, i, make([]byte, 0), h).Exec(); err != nil {
-			return err
+	for _, h := range oldHashes {
+		if _, ok := newHashes[h]; !ok {
+			s.Session.Query("DELETE FROM dconf.files WHERE entryname=?;", s.File+":"+h).Exec()
 		}
 	}
+
+	//if err := s.Session.Query("DELETE FROM dconf.files WHERE entryname=?;", s.File).Exec(); err != nil {
+	//	return err
+	//}
+
+	//for i, h := range hashes {
+	//	if err := s.Session.Query("INSERT INTO dconf.files(entryname, block, data, hash) VALUES (?,?,?,?);", s.File, i, make([]byte, 0), h).Exec(); err != nil {
+	//		return err
+	//	}
+	//}
 
 	return nil
 }

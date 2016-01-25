@@ -108,7 +108,7 @@ func (s *HttpServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		w.WriteHeader(200)
 	case "UPDATE":
-		err := system.Update()
+		err := system.Update(req.URL.Query().Get("force") == "true")
 		if err != nil {
 			s.handleError(err, w)
 			return

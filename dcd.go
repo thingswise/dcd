@@ -37,7 +37,7 @@ var (
 
 var Usage = func() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "  %s (edit|commit|get)\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "  %s (edit|commit|get|update)\n", os.Args[0])
 	flag.PrintDefaults()
 }
 
@@ -110,6 +110,13 @@ func run() {
 }
 
 func main() {
+	logging.SetFormatter(format)
+	if *debug {
+		logging.SetLevel(logging.DEBUG, "dcd")
+	} else {
+		logging.SetLevel(logging.ERROR, "dcd")
+	}
+
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc)
 	go func() {
@@ -167,7 +174,7 @@ func main() {
 				os.Exit(1)
 			}
 		case "update":
-			err := client.Update()
+			err := client.Update(*force)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s\n", err.Error())
 				os.Exit(1)

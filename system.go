@@ -44,7 +44,7 @@ func (sys *System) Edit() error {
 		return NewOperationError(AlreadyCheckedOut, "The workspace has already been checked out")
 	}
 
-	hash, err := updateWorkspace(s, c, w, true)
+	hash, err := updateWorkspace(s, c, w, true, false)
 	if err != nil {
 		log.Error("Cannot update workspace: %s", err.Error())
 		return NewOperationError(InternalError, err.Error())
@@ -71,6 +71,12 @@ func (sys *System) Commit(forceOverwrite bool) error {
 	c := sys.c
 	w := sys.w
 
+	hashes, err := s.getHashes()
+	if err != nil {
+		log.Error("Cannot get hash list from DB: %s", err.Error())
+		return NewOperationError(InternalError, "Cannot get the hash list from DB")
+	}
+
 	if !forceOverwrite {
 		checkout, err := w.GetCheckout()
 		if err != nil {
@@ -80,12 +86,6 @@ func (sys *System) Commit(forceOverwrite bool) error {
 
 		if checkout == "" {
 			return NewOperationError(NotCheckedOut, "The workspace has not been checked out")
-		}
-
-		hashes, err := s.getHashes()
-		if err != nil {
-			log.Error("Cannot get hash list from DB: %s", err.Error())
-			return NewOperationError(InternalError, "Cannot get the hash list from DB")
 		}
 
 		hash := sha256.New()
@@ -195,7 +195,7 @@ func (sys *System) Commit(forceOverwrite bool) error {
 
 	log.Debug("Setting new hashes (%d)", len(newHashes))
 
-	if err := s.setHashes(newHashes); err != nil {
+	if err := s.setHashes(hashes, newHashes); err != nil {
 		log.Error("Cannot update hash list: %s", err.Error())
 		return NewOperationError(InternalError, err.Error())
 	}
@@ -236,7 +236,7 @@ func (sys *System) Get(w io.Writer) error {
 	return nil
 }
 
-func (sys *System) Update() error {
+func (sys *System) Update(force bool) error {
 	sys.lock.Lock()
 	defer sys.lock.Unlock()
 
@@ -244,15 +244,19 @@ func (sys *System) Update() error {
 	c := sys.c
 	w := sys.w
 
-	if _, err := updateWorkspace(s, c, w, true); err != nil {
+	if _, err := updateWorkspace(s, c, w, true, force); err != nil {
 		log.Error("Cannot update workspace: %s", err.Error())
 		return NewOperationError(InternalError, err.Error())
+	}
+
+	if force {
+		w.RemoveCheckout()
 	}
 
 	return nil
 }
 
-func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool) (string, error) {
+func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool, replace bool) (string, error) {
 	hashes, err := s.getHashes()
 	if err != nil {
 		log.Error("Cannot get hash list from DB: %s", err.Error())
@@ -289,7 +293,7 @@ func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool) (stri
 
 	needUpdate = forceUnpack || needUpdate || len(hashes) != len(cachedHashes)
 	if needUpdate {
-		if err := unpack(hashes, c, w); err != nil {
+		if err := unpack(hashes, c, w, replace); err != nil {
 			log.Error("Cannot unpack: %s", err.Error())
 			return "", err
 		}
@@ -325,13 +329,13 @@ func downloadChunk(s *Storage, c *Cache, h string) error {
 	return c.writeChunk(h, data)
 }
 
-func unpack(hashes []string, c *Cache, w *Workspace) error {
+func unpack(hashes []string, c *Cache, w *Workspace, replace bool) error {
 	chk, err := w.GetCheckout()
 	if err != nil {
 		return err
 	}
 
-	if chk != "" {
+	if !replace && chk != "" {
 		log.Debug("Skipping unpack since the workspace has been checked out")
 		return nil
 	}
@@ -370,8 +374,17 @@ func unpack(hashes []string, c *Cache, w *Workspace) error {
 				return fmt.Errorf("Unexpected nil tar header")
 			}
 
+			var dir os.FileMode
+			if header.Typeflag == '5' {
+				dir = os.ModeDir
+			} else if header.Typeflag == 0 || header.Typeflag == '0' {
+				dir = 0
+			} else {
+				return fmt.Errorf("Unsupported header: %d", header.Typeflag)
+			}
+
 			existingEntries[header.Name] = true
-			if err := w.WriteEntry(header.Name, os.FileMode(header.Mode&0777755), header.ModTime, tarStream); err != nil {
+			if err := w.WriteEntry(header.Name, dir|os.FileMode(header.Mode&0777755), header.ModTime, tarStream, replace); err != nil {
 				return err
 			}
 		}
@@ -395,5 +408,5 @@ func (sys *System) runUpdate() {
 
 	defer time.AfterFunc(5*time.Second, func() { sys.runUpdate() })
 
-	updateWorkspace(s, c, w, false)
+	updateWorkspace(s, c, w, false, false)
 }

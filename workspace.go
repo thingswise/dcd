@@ -21,28 +21,77 @@ func (w *Workspace) checkoutMarker() string {
 	return path.Join(w.Root, ".dcd")
 }
 
-func (w *Workspace) WriteEntry(name string, mode os.FileMode, modTime time.Time, r io.Reader) error {
+func (w *Workspace) writeRegFile(filePath string, mode os.FileMode, modTime time.Time, r io.Reader) error {
+	d, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(d, r)
+	if err != nil {
+		return err
+	}
+
+	log.Debug("Adding %s (%d bytes)", filePath, n)
+
+	os.Chtimes(filePath, time.Now(), modTime)
+
+	if err := os.Chmod(filePath, mode&0777555); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (w *Workspace) WriteEntry(name string, mode os.FileMode, modTime time.Time, r io.Reader, replace bool) error {
 	os.MkdirAll(w.Root, 0755)
 	filePath := w.getEntry(name)
 	info, err := os.Stat(filePath)
-	if err != nil || info.ModTime().Before(modTime) {
-		d, err := os.Create(filePath)
-		if err != nil {
-			return err
+	if err != nil {
+		if mode.IsDir() {
+			if err := os.MkdirAll(filePath, mode); err != nil {
+				return err
+			}
+		} else {
+			if err := w.writeRegFile(filePath, mode, modTime, r); err != nil {
+				return err
+			}
 		}
-		n, err := io.Copy(d, r)
-		if err != nil {
-			return err
+	} else {
+		if info.IsDir() {
+			if mode.IsDir() {
+				if err := os.Chmod(filePath, mode&0777555); err != nil {
+					return err
+				}
+			} else {
+				if info.ModTime().Before(modTime) || replace {
+					os.RemoveAll(filePath)
+					if err := w.writeRegFile(filePath, mode, modTime, r); err != nil {
+						return err
+					}
+				} else {
+					// pass
+				}
+			}
+		} else {
+			if mode.IsDir() {
+				if info.ModTime().Before(modTime) || replace {
+					os.RemoveAll(filePath)
+					if err := os.MkdirAll(filePath, mode); err != nil {
+						return err
+					}
+				} else {
+					// pass
+				}
+			} else {
+				if info.ModTime().Before(modTime) || replace {
+					if err := w.writeRegFile(filePath, mode, modTime, r); err != nil {
+						return err
+					}
+				} else {
+					// pass
+				}
+			}
 		}
-
-		log.Debug("Adding %s (%d bytes)", w.getEntry(name), n)
-
-		os.Chtimes(filePath, time.Now(), modTime)
-
-		if err := os.Chmod(w.getEntry(name), mode&0777555); err != nil {
-			return err
-		}
-
 	}
 
 	return nil

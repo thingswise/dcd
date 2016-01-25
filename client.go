@@ -94,8 +94,12 @@ func (c *Client) Commit(force bool) error {
 	return nil
 }
 
-func (c *Client) Update() error {
+func (c *Client) Update(force bool) error {
 	req, err := http.NewRequest("UPDATE", c.address, nil)
+	if force {
+		req.URL.Query().Add("force", "true")
+	}
+
 	if err != nil {
 		return err
 	}
