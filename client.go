@@ -60,6 +60,8 @@ func (c *Client) Edit() error {
 		return err
 	}
 
+	log.Debug("Request: %s %s", req.Method, req.URL.String())
+
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -74,13 +76,15 @@ func (c *Client) Edit() error {
 
 func (c *Client) Commit(force bool) error {
 	req, err := http.NewRequest("COMMIT", c.address, nil)
-	if force {
-		req.URL.Query().Add("force", "true")
-	}
-
 	if err != nil {
 		return err
 	}
+
+	if force {
+		req.URL.RawQuery = "force=true"
+	}
+
+	log.Debug("Request: %s %s", req.Method, req.URL.String())
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -96,13 +100,15 @@ func (c *Client) Commit(force bool) error {
 
 func (c *Client) Update(force bool) error {
 	req, err := http.NewRequest("UPDATE", c.address, nil)
-	if force {
-		req.URL.Query().Add("force", "true")
-	}
-
 	if err != nil {
 		return err
 	}
+
+	if force {
+		req.URL.RawQuery = "force=true"
+	}
+
+	log.Debug("Request: %s %s", req.Method, req.URL.String())
 
 	resp, err := c.client.Do(req)
 	if err != nil {
