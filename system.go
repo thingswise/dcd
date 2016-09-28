@@ -27,7 +27,7 @@ func NewSystem(s *Storage, c *Cache, w *Workspace) *System {
 	}
 }
 
-func (sys *System) Edit() error {
+func (sys *System) Edit(forceOverwrite bool, ph *ProgressHandler) error {
 	sys.lock.Lock()
 	defer sys.lock.Unlock()
 
@@ -35,37 +35,53 @@ func (sys *System) Edit() error {
 	c := sys.c
 	w := sys.w
 
+	var hash string
+
 	chk, err := w.GetCheckout()
 	if err != nil {
 		return NewOperationError(InternalError, err.Error())
 	}
 
-	if chk != "" {
-		return NewOperationError(AlreadyCheckedOut, "The workspace has already been checked out")
-	}
-
-	hash, err := updateWorkspace(s, c, w, true, false)
-	if err != nil {
-		log.Error("Cannot update workspace: %s", err.Error())
-		return NewOperationError(InternalError, err.Error())
+	if forceOverwrite {
+		hash, err = updateWorkspace(s, c, w, true, true, ph)
+		if err != nil {
+			log.Errorf("Cannot update workspace: %s", err.Error())
+			return NewOperationError(InternalError, err.Error())
+		}
+		if chk != "" {
+			w.RemoveCheckout()
+		}
+	} else {
+		if chk != "" {
+			return NewOperationError(AlreadyCheckedOut, "The workspace has already been checked out")
+		}
+		hash, err = updateWorkspace(s, c, w, true, false, ph)
+		if err != nil {
+			log.Errorf("Cannot update workspace: %s", err.Error())
+			return NewOperationError(InternalError, err.Error())
+		}
 	}
 
 	if err := w.SetCheckout(hash); err != nil {
-		log.Error("Cannot set checkout marker: %s", err.Error())
+		log.Errorf("Cannot set checkout marker: %s", err.Error())
 		return NewOperationError(InternalError, err.Error())
 	}
 
 	//if err := w.MakeWritable(); err != nil {
-	//	log.Error("Cannot make writable: %s", err.Error())
+	//	log.Errorf("Cannot make writable: %s", err.Error())
 	//	return NewOperationError(InternalError, err.Error())
 	//}
 
 	return nil
 }
 
-func (sys *System) Commit(forceOverwrite bool) error {
+func (sys *System) Commit(forceOverwrite bool, ph *ProgressHandler) error {
 	sys.lock.Lock()
 	defer sys.lock.Unlock()
+
+	if ph != nil {
+		ph.SetTotal(-1)
+	}
 
 	s := sys.s
 	c := sys.c
@@ -73,14 +89,14 @@ func (sys *System) Commit(forceOverwrite bool) error {
 
 	hashes, err := s.getHashes()
 	if err != nil {
-		log.Error("Cannot get hash list from DB: %s", err.Error())
+		log.Errorf("Cannot get hash list from DB: %s", err.Error())
 		return NewOperationError(InternalError, "Cannot get the hash list from DB")
 	}
 
 	if !forceOverwrite {
 		checkout, err := w.GetCheckout()
 		if err != nil {
-			log.Error("Error getting checkout info: %s", err.Error())
+			log.Errorf("Error getting checkout info: %s", err.Error())
 			return NewOperationError(InternalError, err.Error())
 		}
 
@@ -92,7 +108,7 @@ func (sys *System) Commit(forceOverwrite bool) error {
 		for _, h := range hashes {
 			b, err := parseHashStr(h)
 			if err != nil {
-				log.Error("Cannot parse hash: %s", h)
+				log.Errorf("Cannot parse hash: %s", h)
 				return NewOperationError(InternalError, "Cannot parse hash")
 			}
 
@@ -139,7 +155,7 @@ func (sys *System) Commit(forceOverwrite bool) error {
 			}
 			return nil
 		}); err != nil {
-			log.Error("Error building archive: %s", err.Error())
+			log.Errorf("Error building archive: %s", err.Error())
 		}
 		log.Debug("Tarring finished, closing")
 		tarStream.Close()
@@ -150,6 +166,8 @@ func (sys *System) Commit(forceOverwrite bool) error {
 	hash := sha256.New()
 
 	var newHashes []string = make([]string, 0)
+
+	var progress int64 = 0
 
 	buf := make([]byte, c.ChunkSize)
 	for {
@@ -162,9 +180,13 @@ func (sys *System) Commit(forceOverwrite bool) error {
 			h := hashToStr(hash.Sum(nil))
 			err2 := s.writeChunk(h, chunk)
 			if err2 != nil {
-				log.Error("Error writing chunk to DB: %s", err2.Error())
+				log.Errorf("Error writing chunk to DB: %s", err2.Error())
 				piper.CloseWithError(err2)
 				return NewOperationError(InternalError, err2.Error())
+			}
+			progress++
+			if ph != nil {
+				ph.SetProgress(progress)
 			}
 			newHashes = append(newHashes, h)
 		} else if err == io.ErrUnexpectedEOF {
@@ -176,9 +198,13 @@ func (sys *System) Commit(forceOverwrite bool) error {
 			h := hashToStr(hash.Sum(nil))
 			err2 := s.writeChunk(h, chunk)
 			if err2 != nil {
-				log.Error("Error writing chunk to DB: %s", err2.Error())
+				log.Errorf("Error writing chunk to DB: %s", err2.Error())
 				piper.CloseWithError(err2)
 				return NewOperationError(InternalError, err2.Error())
+			}
+			progress++
+			if ph != nil {
+				ph.SetProgress(progress)
 			}
 			newHashes = append(newHashes, h)
 			break
@@ -187,30 +213,35 @@ func (sys *System) Commit(forceOverwrite bool) error {
 			// no more chunks
 			break
 		} else {
-			log.Error("Error writing chunk: %s", err.Error())
+			log.Errorf("Error writing chunk: %s", err.Error())
 			piper.CloseWithError(err)
 			return NewOperationError(InternalError, err.Error())
 		}
 	}
 
-	log.Debug("Setting new hashes (%d)", len(newHashes))
+	log.Debugf("Setting new hashes (%d)", len(newHashes))
 
-	if err := s.setHashes(hashes, newHashes); err != nil {
-		log.Error("Cannot update hash list: %s", err.Error())
+	if err := s.setHashes(hashes, newHashes, func() {
+		if ph != nil {
+			progress++
+			ph.SetProgress(progress)
+		}
+	}); err != nil {
+		log.Errorf("Cannot update hash list: %s", err.Error())
 		return NewOperationError(InternalError, err.Error())
 	}
 
 	w.RemoveCheckout()
 
 	//if err := w.MakeReadonly(); err != nil {
-	//	log.Error("Cannot make read-only: %s", err.Error())
+	//	log.Errorf("Cannot make read-only: %s", err.Error())
 	//	return NewOperationError(InternalError, err.Error())
 	//}
 
 	return nil
 }
 
-func (sys *System) Get(w io.Writer) error {
+func (sys *System) Get(w io.Writer, ph *ProgressHandler) error {
 	sys.lock.Lock()
 	defer sys.lock.Unlock()
 
@@ -218,9 +249,15 @@ func (sys *System) Get(w io.Writer) error {
 
 	hashes, err := s.getHashes()
 	if err != nil {
-		log.Error("Cannot get hash list from DB: %s", err.Error())
+		log.Errorf("Cannot get hash list from DB: %s", err.Error())
 		return err
 	}
+
+	if ph != nil {
+		ph.SetTotal(int64(len(hashes)))
+	}
+
+	var progress int64 = 0
 
 	for _, h := range hashes {
 		bytes, err := s.readChunk(h)
@@ -231,12 +268,17 @@ func (sys *System) Get(w io.Writer) error {
 		if _, err := w.Write(bytes); err != nil {
 			return err
 		}
+
+		progress++
+		if ph != nil {
+			ph.SetProgress(progress)
+		}
 	}
 
 	return nil
 }
 
-func (sys *System) Update(force bool) error {
+func (sys *System) Update(force bool, ph *ProgressHandler) error {
 	sys.lock.Lock()
 	defer sys.lock.Unlock()
 
@@ -244,8 +286,8 @@ func (sys *System) Update(force bool) error {
 	c := sys.c
 	w := sys.w
 
-	if _, err := updateWorkspace(s, c, w, true, force); err != nil {
-		log.Error("Cannot update workspace: %s", err.Error())
+	if _, err := updateWorkspace(s, c, w, true, force, ph); err != nil {
+		log.Errorf("Cannot update workspace: %s", err.Error())
 		return NewOperationError(InternalError, err.Error())
 	}
 
@@ -256,10 +298,10 @@ func (sys *System) Update(force bool) error {
 	return nil
 }
 
-func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool, replace bool) (string, error) {
+func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool, replace bool, ph *ProgressHandler) (string, error) {
 	hashes, err := s.getHashes()
 	if err != nil {
-		log.Error("Cannot get hash list from DB: %s", err.Error())
+		log.Errorf("Cannot get hash list from DB: %s", err.Error())
 		return "", err
 	}
 	hashSet := make(map[string]bool)
@@ -270,7 +312,7 @@ func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool, repla
 
 	cachedHashes, err := c.getCachedHashes()
 	if err != nil {
-		log.Error("Cannot get cached hash list: %s", err.Error())
+		log.Errorf("Cannot get cached hash list: %s", err.Error())
 		return "", err
 	}
 	cachedHashSet := make(map[string]bool)
@@ -279,30 +321,72 @@ func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool, repla
 	}
 	//log.Debug("Have %d hashes in workspace", len(hashes))
 
+	var hashesToDownload int64 = 0
+
+	for _, h := range hashes {
+		if _, ok := cachedHashSet[h]; !ok {
+			hashesToDownload++
+		}
+	}
+
+	var hashesToUnpack int64 = 0
+
+	if hashesToDownload > 0 || forceUnpack || len(hashes) != len(cachedHashes) {
+		hashesToUnpack = int64(len(hashes))
+	}
+
+	var hashesToRemove int64 = 0
+
+	for _, h := range cachedHashes {
+		if _, ok := hashSet[h]; !ok {
+			hashesToRemove++
+		}
+	}
+
+	if ph != nil {
+		ph.SetTotal(hashesToDownload + hashesToUnpack + hashesToRemove)
+	}
+
+	log.Debugf("hashesToDownload=%d, hashesToUnpack=%d, hashesToRemove=%d", hashesToDownload, hashesToUnpack, hashesToRemove)
+
+	var progress int64 = 0
+
 	var needUpdate = false
 	for _, h := range hashes {
 		if _, ok := cachedHashSet[h]; !ok {
 			log.Debug("Need to download chunk %s", h)
 			if err := downloadChunk(s, c, h); err != nil {
-				log.Error("Cannot download chunk: %s", err.Error())
+				log.Errorf("Cannot download chunk: %s", err.Error())
 				return "", err
 			}
 			needUpdate = true
+			progress++
+			if ph != nil {
+				ph.SetProgress(progress)
+			}
 		}
 	}
 
 	needUpdate = forceUnpack || needUpdate || len(hashes) != len(cachedHashes)
 	if needUpdate {
 		if err := unpack(hashes, c, w, replace); err != nil {
-			log.Error("Cannot unpack: %s", err.Error())
+			log.Errorf("Cannot unpack: %s", err.Error())
 			return "", err
+		}
+		progress += int64(len(hashes))
+		if ph != nil {
+			ph.SetProgress(progress)
 		}
 	}
 
 	for _, h := range cachedHashes {
 		if _, ok := hashSet[h]; !ok {
 			if err := c.removeChunk(h); err != nil {
-				log.Error("Cannot remove chunk: %s", err.Error())
+				log.Errorf("Cannot remove chunk: %s", err.Error())
+			}
+			progress++
+			if ph != nil {
+				ph.SetProgress(progress)
 			}
 		}
 	}
@@ -311,7 +395,7 @@ func updateWorkspace(s *Storage, c *Cache, w *Workspace, forceUnpack bool, repla
 	for _, h := range hashes {
 		b, err := parseHashStr(h)
 		if err != nil {
-			log.Error("Error parsing hash: %s", h)
+			log.Errorf("Error parsing hash: %s", h)
 			return "", err
 		}
 		hash.Write(b)
@@ -408,5 +492,5 @@ func (sys *System) runUpdate() {
 
 	defer time.AfterFunc(5*time.Second, func() { sys.runUpdate() })
 
-	updateWorkspace(s, c, w, false, false)
+	updateWorkspace(s, c, w, false, false, nil)
 }

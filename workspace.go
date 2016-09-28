@@ -35,7 +35,7 @@ func (w *Workspace) writeRegFile(filePath string, mode os.FileMode, modTime time
 
 	os.Chtimes(filePath, time.Now(), modTime)
 
-	if err := os.Chmod(filePath, mode&0777555); err != nil {
+	if err := os.Chmod(filePath, mode&0777777); err != nil {
 		return err
 	}
 
@@ -48,24 +48,24 @@ func (w *Workspace) WriteEntry(name string, mode os.FileMode, modTime time.Time,
 	info, err := os.Stat(filePath)
 	if err != nil {
 		if mode.IsDir() {
-			if err := os.MkdirAll(filePath, mode); err != nil {
+			if err := os.MkdirAll(filePath, mode|0700); err != nil {
 				return err
 			}
 		} else {
-			if err := w.writeRegFile(filePath, mode, modTime, r); err != nil {
+			if err := w.writeRegFile(filePath, mode|0600, modTime, r); err != nil {
 				return err
 			}
 		}
 	} else {
 		if info.IsDir() {
 			if mode.IsDir() {
-				if err := os.Chmod(filePath, mode&0777555); err != nil {
+				if err := os.Chmod(filePath, (mode&0777555)|0700); err != nil {
 					return err
 				}
 			} else {
 				if info.ModTime().Before(modTime) || replace {
 					os.RemoveAll(filePath)
-					if err := w.writeRegFile(filePath, mode, modTime, r); err != nil {
+					if err := w.writeRegFile(filePath, mode|0600, modTime, r); err != nil {
 						return err
 					}
 				} else {
@@ -76,7 +76,7 @@ func (w *Workspace) WriteEntry(name string, mode os.FileMode, modTime time.Time,
 			if mode.IsDir() {
 				if info.ModTime().Before(modTime) || replace {
 					os.RemoveAll(filePath)
-					if err := os.MkdirAll(filePath, mode); err != nil {
+					if err := os.MkdirAll(filePath, mode|0700); err != nil {
 						return err
 					}
 				} else {
@@ -84,7 +84,7 @@ func (w *Workspace) WriteEntry(name string, mode os.FileMode, modTime time.Time,
 				}
 			} else {
 				if info.ModTime().Before(modTime) || replace {
-					if err := w.writeRegFile(filePath, mode, modTime, r); err != nil {
+					if err := w.writeRegFile(filePath, mode|0600, modTime, r); err != nil {
 						return err
 					}
 				} else {
@@ -180,22 +180,22 @@ func (w *Workspace) Walk(f WalkFunc) error {
 	})
 }
 
-func (w *Workspace) MakeWritable() error {
-	return filepath.Walk(w.Root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+//func (w *Workspace) MakeWritable() error {
+//	return filepath.Walk(w.Root, func(path string, info os.FileInfo, err error) error {
+//		if err != nil {
+//			return err
+//		}
 
-		return os.Chmod(path, info.Mode()|0222)
-	})
-}
+//		return os.Chmod(path, info.Mode()|0222)
+//	})
+//}
 
-func (w *Workspace) MakeReadonly() error {
-	return filepath.Walk(w.Root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+//func (w *Workspace) MakeReadonly() error {
+//	return filepath.Walk(w.Root, func(path string, info os.FileInfo, err error) error {
+//		if err != nil {
+//			return err
+//		}
 
-		return os.Chmod(path, info.Mode()&0777555)
-	})
-}
+//		return os.Chmod(path, info.Mode()&0777555)
+//	})
+//}

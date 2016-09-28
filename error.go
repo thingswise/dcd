@@ -12,6 +12,7 @@ const (
 	AlreadyCheckedOut = 3
 	CheckoutMismatch  = 4
 	UnknownFile       = 5
+	InvalidRequest    = 6
 )
 
 func NewOperationError(t int, message string) *OperationError {

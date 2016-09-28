@@ -33,6 +33,7 @@ var (
 	force       = flag.Bool("o", false, "overwrite repo contents")
 	consistency = flag.String("c", "quorum", "cassandra consistency level (r/w)")
 	//cacheDir    = flag.String("s", "/.dcdcache", "cache directory")
+	progress = flag.Bool("p", false, "display progress")
 )
 
 var Usage = func() {
@@ -50,12 +51,12 @@ func run() {
 	} else if *consistency == "all" {
 		consistencyLevel = gocql.All
 	} else {
-		log.Fatal("Unsupported consistency level: %s", *consistency)
+		log.Fatalf("Unsupported consistency level: %s", *consistency)
 	}
 
 	cluster := gocql.NewCluster(*cassandra)
 	//cluster.DiscoverHosts = true
-	cluster.Timeout = 2 * time.Second
+	cluster.Timeout = 20 * time.Second
 	cluster.Consistency = consistencyLevel
 
 	session, _ := cluster.CreateSession()
@@ -68,7 +69,7 @@ func run() {
 		for _, repo := range repos {
 			rc := strings.SplitN(repo, ":", 3)
 			if len(rc) != 3 {
-				log.Fatal("Invalid repo configuration: %s", repo)
+				log.Fatalf("Invalid repo configuration: %s", repo)
 			}
 
 			s := &Storage{
@@ -111,23 +112,30 @@ func run() {
 
 func main() {
 	logging.SetFormatter(format)
+
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc)
+	go func() {
+		for {
+			s := <-sc
+			ssig := s.(syscall.Signal)
+			if ssig == syscall.SIGWINCH {
+				// ignore SIGWINCH (window changed)
+				continue
+			}
+			log.Errorf("Signal received: %s", ssig.String())
+			os.Exit(128 + int(ssig))
+		}
+	}()
+
+	flag.Usage = Usage
+	flag.Parse()
+
 	if *debug {
 		logging.SetLevel(logging.DEBUG, "dcd")
 	} else {
 		logging.SetLevel(logging.ERROR, "dcd")
 	}
-
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc)
-	go func() {
-		s := <-sc
-		ssig := s.(syscall.Signal)
-		log.Error("Signal received: %s", ssig.String())
-		os.Exit(128 + int(ssig))
-	}()
-
-	flag.Usage = Usage
-	flag.Parse()
 
 	if flag.NArg() == 0 {
 		if *daemonMode {
@@ -153,7 +161,29 @@ func main() {
 		}
 		command := flag.Arg(0)
 		file := flag.Arg(1)
-		client := NewClientUnixSocket(*socket, file)
+		var ph ClientProgressCallback = nil
+		if *progress {
+			ph = func(progress int64, total int64, final bool) {
+				//fmt.Printf("progress=%d, total=%d\n", progress, total)
+				if progress < 0 {
+					return
+				}
+				if total > 0 {
+					if final {
+						fmt.Fprintf(os.Stderr, "%s: %3d%%\n", file, 100*progress/total)
+					} else {
+						fmt.Fprintf(os.Stderr, "%s: %3d%%\r", file, 100*progress/total)
+					}
+				} else {
+					if final {
+						fmt.Fprintf(os.Stderr, "%s: %8d\n", file, progress)
+					} else {
+						fmt.Fprintf(os.Stderr, "%s: %8d\r", file, progress)
+					}
+				}
+			}
+		}
+		client := NewClientUnixSocket(*socket, file, ph)
 		switch command {
 		case "get":
 			err := client.Get(os.Stdout)
@@ -162,7 +192,7 @@ func main() {
 				os.Exit(1)
 			}
 		case "edit":
-			err := client.Edit()
+			err := client.Edit(*force)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s\n", err.Error())
 				os.Exit(1)
